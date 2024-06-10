@@ -1,0 +1,6 @@
+https://www.santanderconsumer.es/_cache_c04a/_themesdelivery/SantanderConsumerFinanceTheme/assets/node_modules/normalize.css/normalize.css
+https://www.santanderconsumer.es/_cache_0f07/favicon.ico
+https://www.santanderconsumer.es/_cache_c04a/_themesdelivery/SantanderConsumerFinanceTheme/assets/plugins/bootstrap/css/bootstrap.min.css
+https://www.santanderconsumer.es/_cache_c04a/_themesdelivery/SantanderConsumerFinanceTheme/assets/node_modules/bootstrap/dist/css/bootstrap-grid.css
+https://www.santanderconsumer.es/_cache_c04a/_themesdelivery/SantanderConsumerFinanceTheme/assets/css/new-style/style.css
+https://www.santanderconsumer.es/
