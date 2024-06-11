@@ -6,7 +6,6 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse, urldefrag
-import pickle  # Para persistencia del estado
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -14,14 +13,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Desactivar logging para mantener la salida de consola limpia
+logging.basicConfig(level=logging.CRITICAL)
 
-# Colores ANSI
-GREEN = '\033[92m'
-RESET = '\033[0m'
-
-# Agentes de usuario para rotación
+# Lista de agentes de usuario para rotación
 USER_AGENTS = [
     'ControllerSEO/1.0 (compatible; controllerSEO/1.0; +https://controllerseo.com/)',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -30,29 +25,27 @@ USER_AGENTS = [
 ]
 
 class WebCrawler:
-    def __init__(self, start_url, max_workers=3, state_file='crawler_state.pkl'):
+    def __init__(self, start_url, max_workers=3):
         self.start_url = start_url
         self.base_domain = urlparse(start_url).netloc
-        self.visited = set()
-        self.urls_to_visit = deque([start_url])
-        self.headers = {'User-Agent': random.choice(USER_AGENTS)}
-        self.unique_url_counter = 0
-        self.max_workers = max_workers
-        self.state_file = state_file
+        self.visited = set()  # Conjunto de URLs visitadas
+        self.urls_to_visit = deque([start_url])  # Cola de URLs por visitar
+        self.headers = {'User-Agent': random.choice(USER_AGENTS)}  # Elegir un agente de usuario al azar
+        self.max_workers = max_workers  # Número máximo de trabajadores
 
         # Configurar Selenium
         options = webdriver.ChromeOptions()
         options.add_argument("--headless")
         options.add_argument(f"user-agent={self.headers['User-Agent']}")
+        options.add_argument("--disable-logging")
         self.driver = webdriver.Chrome(options=options)
         self.driver.implicitly_wait(10)
 
-        self.load_state()
-
     def __del__(self):
-        self.driver.quit()
+        self.driver.quit()  # Asegurarse de cerrar el navegador al finalizar
 
     def is_valid_url(self, url):
+        # Validar si la URL es válida
         try:
             parsed = urlparse(url)
             return bool(parsed.netloc) and bool(parsed.scheme)
@@ -60,55 +53,58 @@ class WebCrawler:
             return False
 
     def is_internal_url(self, url):
-        return urlparse(url).netloc == self.base_domain
+        # Comprobar si la URL es interna (del mismo dominio)
+        return urlparse(url).netloc == self.base_domain or url.startswith('/')
 
     def normalize_url(self, url):
+        # Normalizar la URL eliminando fragmentos
         defragmented_url, _ = urldefrag(url)
         return defragmented_url
 
     def clean_url(self, url):
+        # Limpiar la URL eliminando caracteres no imprimibles y espacios en blanco
         url = re.sub(r'[^\x20-\x7E]+', '', url).strip()
         return url
 
     def visit_url(self, url):
         try:
-            normalized_url = self.normalize_url(url)
-            if normalized_url not in self.visited:
-                self.unique_url_counter += 1
-                self.visited.add(normalized_url)
-                print(f"{GREEN}ID: {self.unique_url_counter} - URL: {normalized_url}{RESET}")
+            self.driver.get(url)
+            WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
 
-                self.driver.get(url)
-                WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
-                time.sleep(2)
+            # Esperar a que todo el contenido dinámico se cargue
+            time.sleep(5)
 
-                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
 
-                elements = soup.find_all(['a', 'img', 'link', 'script'])
-                for element in elements:
-                    href = None
-                    if element.name == 'a' and element.get('href'):
+            # Extraer URLs de los elementos <a>, <img>, <link>
+            elements = soup.find_all(['a', 'img', 'link'])
+            for element in elements:
+                href = None
+                if element.name == 'a' and element.get('href'):
+                    href = urljoin(url, element['href'])
+                elif element.name == 'img' and element.get('src'):
+                    href = urljoin(url, element.get('src'))
+                elif element.name == 'link' and element.get('href'):
+                    if element.get('type') == 'application/rss+xml':
+                        continue  # Excluir enlaces de tipo "application/rss+xml"
+                    rel = element.get('rel', [])
+                    if any(rel_value in ['canonical', 'prev', 'next', 'stylesheet', 'alternate', 'icon'] for rel_value in rel):
                         href = urljoin(url, element['href'])
-                    elif element.name == 'img' and element.get('src'):
-                        href = urljoin(url, element.get('src'))
-                    elif element.name == 'link' and element.get('href'):
-                        if element.get('type') == 'application/rss+xml':
-                            continue
-                        rel = element.get('rel', [])
-                        if any(rel_value in ['canonical', 'prev', 'next', 'stylesheet', 'alternate', 'icon'] for rel_value in rel):
-                            href = urljoin(url, element['href'])
-                        else:
-                            continue
-                    elif element.name == 'script' and element.get('src'):
-                        href = urljoin(url, element.get('src'))
+                    else:
+                        continue
+                else:
+                    continue
 
-                    if href:
-                        href = self.clean_url(href)
-                        normalized_href = self.normalize_url(href)
-                        if self.is_valid_url(normalized_href) and self.is_internal_url(normalized_href) and normalized_href not in self.visited:
-                            self.urls_to_visit.append(href)
+                href = self.clean_url(href)
+                normalized_href = self.normalize_url(href)
+                if self.is_valid_url(normalized_href) and self.is_internal_url(normalized_href) and normalized_href not in self.visited:
+                    self.visited.add(normalized_href)
+                    print(normalized_href)
+                    with open("urls_encontradas.txt", "a") as file:
+                        file.write(f"{normalized_href}\n")
+                    self.urls_to_visit.append(href)
         except Exception as e:
-            logging.error(f"Error visiting {url}: {e}")
+            pass  # Ignorar errores para mantener la salida limpia
 
     def crawl(self):
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -122,7 +118,7 @@ class WebCrawler:
                     try:
                         future.result()
                     except Exception as e:
-                        logging.error(f"Error during crawl: {e}")
+                        pass  # Ignorar errores para mantener la salida limpia
                     futures.remove(future)
 
                 # Rotar agente de usuario para cada nuevo lote de URLs
@@ -132,39 +128,6 @@ class WebCrawler:
                 # Política de retardo avanzada
                 time.sleep(random.uniform(1, 3))  # Retardo aleatorio entre 1 y 3 segundos
 
-            logging.info("Crawling completado. URLs encontradas:")
-            for visited_url in self.visited:
-                logging.info(visited_url)
-
-            # Guardar las URLs únicas en un fichero
-            with open("urls_encontradas.txt", "w") as file:
-                for url in self.visited:
-                    file.write(url + "\n")
-
-            self.save_state()
-            print(f"Todas las URLs únicas se han guardado en urls_encontradas.txt")
-
-    def save_state(self):
-        state = {
-            'visited': self.visited,
-            'urls_to_visit': list(self.urls_to_visit),
-            'unique_url_counter': self.unique_url_counter
-        }
-        with open(self.state_file, 'wb') as f:
-            pickle.dump(state, f)
-        logging.info("Estado guardado.")
-
-    def load_state(self):
-        try:
-            with open(self.state_file, 'rb') as f:
-                state = pickle.load(f)
-                self.visited = state.get('visited', set())
-                self.urls_to_visit = deque(state.get('urls_to_visit', []))
-                self.unique_url_counter = state.get('unique_url_counter', 0)
-            logging.info("Estado cargado.")
-        except FileNotFoundError:
-            logging.info("No se encontró un estado previo, iniciando nuevo rastreo.")
-
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python crawler.py <start_url>")
@@ -173,4 +136,3 @@ if __name__ == "__main__":
     start_url = sys.argv[1]
     crawler = WebCrawler(start_url)
     crawler.crawl()
-
